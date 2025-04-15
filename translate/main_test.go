@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -323,6 +324,11 @@ func TestDoesTargetLanguageExist(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Cleanup(func() {
+				// Reset the cache for testing
+				supportedLanguageCache = sync.Map{}
+			})
+
 			mockClient := &MockTranslateClient{
 				ListLanguagesFunc: func(ctx context.Context, params *translate.ListLanguagesInput, optFns ...func(*translate.Options)) (*translate.ListLanguagesOutput, error) {
 					if tt.mockError != nil {
