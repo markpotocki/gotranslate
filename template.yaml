@@ -1,0 +1,120 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  gotranslate
+
+  Sample SAM Template for gotranslate
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    Description: Environment name
+    AllowedValues:
+      - dev
+      - prod
+  Application:
+    Type: String
+    Default: gotranslate
+    Description: Application name
+  Owner:
+    Type: String
+    Default: Mark
+    Description: Owner name
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 5
+    MemorySize: 128
+
+    Tracing: Active
+    # You can add LoggingConfig parameters such as the Logformat, Log Group, and SystemLogLevel or ApplicationLogLevel. Learn more here https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-function.html#sam-function-loggingconfig.
+    LoggingConfig:
+      LogFormat: JSON
+  Api:
+    TracingEnabled: true
+Resources:
+  TranslateAPI:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Environment
+      Auth:
+        ApiKeyRequired: true
+
+  TranslateFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: go1.x
+    Properties:
+      CodeUri: translate/
+      Handler: bootstrap
+      Runtime: provided.al2023
+      Architectures:
+      - x86_64
+      Events:
+        CatchAll:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TranslateAPI
+            Path: /translate
+            Method: POST
+            Auth:
+              ApiKeyRequired: true
+      Environment:
+        Variables:
+          TRANSLATE_TABLE_NAME: !Ref TranslateTable
+          REGION: !Ref AWS::Region
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TranslateTable
+        - Statement:
+            Effect: Allow
+            Action:
+              - translate:TranslateText
+              - translate:ListLanguages
+            Resource: "*"
+      Tags:
+        Name: TranslateFunction
+        Environment: !Ref Environment
+        Application: !Ref Application
+        Owner: !Ref Owner
+
+  TranslateTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey:
+        Name: hash
+        Type: String
+      Tags:
+        Name: TranslateTable
+        Environment: !Ref Environment
+        Application: !Ref Application
+        Owner: !Ref Owner
+
+  ApplicationResourceGroup:
+    Type: AWS::ResourceGroups::Group
+    Properties:
+      Name:
+        Fn::Sub: ApplicationInsights-SAM-${AWS::StackName}
+      ResourceQuery:
+        Type: CLOUDFORMATION_STACK_1_0
+  ApplicationInsightsMonitoring:
+    Type: AWS::ApplicationInsights::Application
+    Properties:
+      ResourceGroupName:
+        Ref: ApplicationResourceGroup
+      AutoConfigurationEnabled: 'true'
+Outputs:
+  TranslateAPI:
+    Description: API Gateway endpoint URL for Prod environment for Translate Function
+    Value: !Sub "https://${TranslateAPI}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/translate/"
+  TranslateFunction:
+    Description: Translate Lambda Function ARN
+    Value: !GetAtt TranslateFunction.Arn
+  TranslateFunctionIamRole:
+    Description: Implicit IAM Role created for Translate function
+    Value: !GetAtt TranslateFunctionRole.Arn
+  TranslateTable:
+    Description: Translate DynamoDB Table
+    Value: !Ref TranslateTable
