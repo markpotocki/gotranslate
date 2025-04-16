@@ -689,7 +689,7 @@ func TestHandle(t *testing.T) {
 			},
 			expectedResponse: events.APIGatewayProxyResponse{
 				StatusCode: http.StatusInternalServerError,
-				Body:       "Error checking cache",
+				Body:       "Error during translation",
 			},
 			wantErr: false,
 		},
