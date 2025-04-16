@@ -20,6 +20,7 @@ import (
 	"github.com/aws/aws-xray-sdk-go/instrumentation/awsv2"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/sentencizer/sentencizer"
+	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -75,6 +76,11 @@ type CacheItem struct {
 	SourceLanguage string
 	// TargetLanguage is the language code of the target text
 	TargetLanguage string
+}
+
+type indexedResult struct {
+	index  int
+	result string
 }
 
 type DynamoDBClient interface {
@@ -150,52 +156,69 @@ func (h *handler) handle(ctx context.Context, event events.APIGatewayProxyReques
 	tokens := splitSentences(request.Text)
 
 	// List to store all translated sentences
-	var translatedSentences []string
+	results := make(chan indexedResult, len(tokens))
 
 	// Iterate over each sentence and translate it
-	for _, token := range tokens {
-		// Check if the translation is already cached
-		cacheItem, useCache, err := shouldCacheBeUsed(ctx, h.dynamoClient, request.SourceLanguage, request.TargetLanguage, token)
-		if err != nil {
-			return events.APIGatewayProxyResponse{
-				StatusCode: http.StatusInternalServerError,
-				Body:       "Error checking cache",
-			}, nil
-		}
-		if useCache {
-			// Use the cached translation
-			translatedSentences = append(translatedSentences, cacheItem.TranslatedText)
-			continue
-		}
+	errGroup, groupCtx := errgroup.WithContext(ctx)
+	errGroup.SetLimit(10) // Limit the number of concurrent translations
 
-		// Translate the text using AWS Translate
-		translateResponse, err := translateLanguage(ctx, h.translateClient, token, request.SourceLanguage, request.TargetLanguage)
-		if err != nil {
-			return events.APIGatewayProxyResponse{
-				StatusCode: http.StatusInternalServerError,
-				Body:       "Error translating text",
-			}, nil
-		}
+	for idx, tok := range tokens {
+		index := idx // Capture the index for the goroutine
+		token := tok // Capture the token for the goroutine
+		errGroup.Go(func() error {
+			cacheItem, useCache, err := shouldCacheBeUsed(groupCtx, h.dynamoClient, request.SourceLanguage, request.TargetLanguage, token)
+			if err != nil {
+				return fmt.Errorf("error checking cache for token %d: %w", index, err)
+			}
 
-		// Cache the translated text
-		cacheItem = CacheItem{
-			Hash:           getHashFromText(fmt.Sprintf("%s-%s-%s", request.SourceLanguage, request.TargetLanguage, token)),
-			TranslatedText: translateResponse.TranslatedText,
-			SourceText:     token,
-			SourceLanguage: request.SourceLanguage,
-			TargetLanguage: request.TargetLanguage,
-		}
-		err = cacheTranslatedText(ctx, h.dynamoClient, cacheItem)
-		if err != nil {
-			return events.APIGatewayProxyResponse{
-				StatusCode: http.StatusInternalServerError,
-				Body:       "Error caching translation",
-			}, nil
-		}
+			if useCache {
+				// Use the cached translation
+				results <- indexedResult{index: index, result: cacheItem.TranslatedText}
+				return nil
+			}
 
-		// Append the translated text to the list
-		translatedSentences = append(translatedSentences, translateResponse.TranslatedText)
+			translateResponse, err := translateLanguage(groupCtx, h.translateClient, token, request.SourceLanguage, request.TargetLanguage)
+			if err != nil {
+				return fmt.Errorf("error translating token %d: %w", index, err)
+			}
+
+			cacheItem = CacheItem{
+				Hash:           getHashFromText(fmt.Sprintf("%s-%s-%s", request.SourceLanguage, request.TargetLanguage, token)),
+				TranslatedText: translateResponse.TranslatedText,
+				SourceText:     token,
+				SourceLanguage: request.SourceLanguage,
+				TargetLanguage: request.TargetLanguage,
+			}
+
+			err = cacheTranslatedText(groupCtx, h.dynamoClient, cacheItem)
+			if err != nil {
+				return fmt.Errorf("error caching translation for token %d: %w", index, err)
+			}
+
+			results <- indexedResult{index: index, result: translateResponse.TranslatedText}
+			return nil
+		})
 	}
+
+	// Merge all translated sentences
+	translatedSentences := make([]string, 0, len(tokens))
+
+	go func() {
+		for res := range results {
+			translatedSentences[res.index] = res.result
+		}
+	}()
+
+	// Wait for all translations to complete
+	if err := errGroup.Wait(); err != nil {
+		return events.APIGatewayProxyResponse{
+			StatusCode: http.StatusInternalServerError,
+			Body:       fmt.Sprintf("Error during translation: %v", err),
+		}, nil
+	}
+
+	// Close the results channel
+	close(results)
 
 	// Join the translated sentences into a single string
 	translatedText := strings.Builder{}
