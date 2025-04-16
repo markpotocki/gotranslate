@@ -201,7 +201,7 @@ func (h *handler) handle(ctx context.Context, event events.APIGatewayProxyReques
 	}
 
 	// Merge all translated sentences
-	translatedSentences := make([]string, 0, len(tokens))
+	translatedSentences := make([]string, len(tokens))
 
 	go func() {
 		for res := range results {
