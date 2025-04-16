@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"slices"
@@ -76,11 +77,6 @@ type CacheItem struct {
 	SourceLanguage string
 	// TargetLanguage is the language code of the target text
 	TargetLanguage string
-}
-
-type indexedResult struct {
-	index  int
-	result string
 }
 
 type DynamoDBClient interface {
@@ -155,12 +151,11 @@ func (h *handler) handle(ctx context.Context, event events.APIGatewayProxyReques
 	// Split the text into sentences
 	tokens := splitSentences(request.Text)
 
-	// List to store all translated sentences
-	results := make(chan indexedResult, len(tokens))
-
 	// Iterate over each sentence and translate it
 	errGroup, groupCtx := errgroup.WithContext(ctx)
 	errGroup.SetLimit(10) // Limit the number of concurrent translations
+
+	translatedSentences := make([]string, len(tokens))
 
 	for idx, tok := range tokens {
 		index := idx // Capture the index for the goroutine
@@ -173,7 +168,7 @@ func (h *handler) handle(ctx context.Context, event events.APIGatewayProxyReques
 
 			if useCache {
 				// Use the cached translation
-				results <- indexedResult{index: index, result: cacheItem.TranslatedText}
+				translatedSentences[index] = cacheItem.TranslatedText
 				return nil
 			}
 
@@ -195,30 +190,19 @@ func (h *handler) handle(ctx context.Context, event events.APIGatewayProxyReques
 				return fmt.Errorf("error caching translation for token %d: %w", index, err)
 			}
 
-			results <- indexedResult{index: index, result: translateResponse.TranslatedText}
+			translatedSentences[index] = translateResponse.TranslatedText
 			return nil
 		})
 	}
 
-	// Merge all translated sentences
-	translatedSentences := make([]string, len(tokens))
-
-	go func() {
-		for res := range results {
-			translatedSentences[res.index] = res.result
-		}
-	}()
-
 	// Wait for all translations to complete
 	if err := errGroup.Wait(); err != nil {
+		log.Printf("Error during translation: %v", err)
 		return events.APIGatewayProxyResponse{
 			StatusCode: http.StatusInternalServerError,
-			Body:       fmt.Sprintf("Error during translation: %v", err),
+			Body:       "Error during translation",
 		}, nil
 	}
-
-	// Close the results channel
-	close(results)
 
 	// Join the translated sentences into a single string
 	translatedText := strings.Builder{}
