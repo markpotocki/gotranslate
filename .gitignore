@@ -1,1 +1,12 @@
+# Ignore AWS SAM build artifacts
 .aws-sam/*
+
+# Ignore Python bytecode files
+*.pyc
+# Ignore Python cache directories
+__pycache__/
+.pytest_cache/
+
+# Ignore virtual environment directories
+.venv/
+venv/
