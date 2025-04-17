@@ -223,7 +223,7 @@ jobs:
           aws-secret-access-key: ${{ env.PIPELINE_USER_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.TESTING_REGION }}
           role-to-assume: ${{ env.TESTING_PIPELINE_EXECUTION_ROLE }}
-          role-session-name: testing-packaging
+          role-session-name: integration-testing
           role-duration-seconds: 3600
           role-skip-session-tagging: true
       - name: Get Cloudformation Outputs
@@ -235,10 +235,6 @@ jobs:
             --output json)
           API_URL=$(echo "$STACK_OUTPUT" | jq -r '.[] | select(.OutputKey=="TranslateAPI").OutputValue')
           echo "API_URL=$API_URL" >> $GITHUB_ENV
-        env:
-          AWS_ACCESS_KEY_ID: ${{ env.PIPELINE_USER_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ env.PIPELINE_USER_SECRET_ACCESS_KEY }}
-          AWS_REGION: ${{ env.TESTING_REGION }}
       - name: Run integration tests
         run: |
           pytest --junitxml=junit/test-results.xml
