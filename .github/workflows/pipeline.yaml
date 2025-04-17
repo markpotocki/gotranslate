@@ -31,6 +31,7 @@ env:
   # prod "sam package" and "sam deploy" commands.
   # PROD_IMAGE_REPOSITORY = '0123456789.dkr.ecr.region.amazonaws.com/repository-name'
   PROD_REGION: us-east-2
+  TESTING_API_KEY : ${{ secrets.TESTING_API_KEY }}
 
 jobs:
   test:
@@ -206,8 +207,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - run: |
-          # trigger the integration tests here
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r pytest/requirements.txt
+      - name: Get Cloudformation Outputs
+        run: |
+          STACK_OUTPUT=$(aws cloudformation describe-stacks \
+            --stack-name ${TESTING_STACK_NAME} \
+            --region ${TESTING_REGION} \
+            --query "Stacks[0].Outputs" \
+            --output json)
+          API_URL=$(echo "$STACK_OUTPUT" | jq -r '.[] | select(.OutputKey=="TranslateAPI").OutputValue')
+          echo "API_URL=$API_URL" >> $GITHUB_ENV
+        env:
+          AWS_ACCESS_KEY_ID: ${{ env.PIPELINE_USER_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.PIPELINE_USER_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ env.TESTING_REGION }}
+      - name: Run integration tests
+        run: |
+          pytest --junitxml=junit/test-results.xml
+        env:
+          TESTING_API_KEY: ${{ env.TESTING_API_KEY }}
+          API_URL: ${{ env.API_URL }}
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results
+          path: junit/test-results.xml
+        if: ${{ always() }}
 
   deploy-prod:
     if: github.ref == 'refs/heads/main'
