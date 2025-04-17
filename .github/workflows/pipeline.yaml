@@ -216,6 +216,16 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r pytest/requirements.txt
+      - name: Assume the testing pipeline user role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.PIPELINE_USER_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.PIPELINE_USER_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.TESTING_REGION }}
+          role-to-assume: ${{ env.TESTING_PIPELINE_EXECUTION_ROLE }}
+          role-session-name: testing-packaging
+          role-duration-seconds: 3600
+          role-skip-session-tagging: true
       - name: Get Cloudformation Outputs
         run: |
           STACK_OUTPUT=$(aws cloudformation describe-stacks \
