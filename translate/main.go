@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -21,6 +22,7 @@ import (
 	"github.com/aws/aws-xray-sdk-go/instrumentation/awsv2"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/sentencizer/sentencizer"
+	"golang.org/x/net/html"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -148,16 +150,34 @@ func (h *handler) handle(ctx context.Context, event events.APIGatewayProxyReques
 		}, nil
 	}
 
-	// Split the text into sentences
-	tokens := splitSentences(request.Text)
+	// Store our tokens to translate here
+	var htmlTokens []html.Token
+	var sentences []string
+	var wordCounts []int
+
+	// Detect if it is HTML content
+	htmlContent := isHTML(request.Text)
+	if htmlContent {
+		var err error
+		htmlTokens, sentences, wordCounts, err = getTextFromHTML(request.Text)
+		if err != nil {
+			return events.APIGatewayProxyResponse{
+				StatusCode: http.StatusInternalServerError,
+				Body:       "Error processing HTML content",
+			}, nil
+		}
+	} else {
+		// Split the text into sentences
+		sentences = splitSentences(request.Text)
+	}
 
 	// Iterate over each sentence and translate it
 	errGroup, groupCtx := errgroup.WithContext(ctx)
 	errGroup.SetLimit(10) // Limit the number of concurrent translations
 
-	translatedSentences := make([]string, len(tokens))
+	translatedSentences := make([]string, len(sentences))
 
-	for idx, tok := range tokens {
+	for idx, tok := range sentences {
 		index := idx // Capture the index for the goroutine
 		token := tok // Capture the token for the goroutine
 		errGroup.Go(func() error {
@@ -205,15 +225,16 @@ func (h *handler) handle(ctx context.Context, event events.APIGatewayProxyReques
 	}
 
 	// Join the translated sentences into a single string
-	translatedText := strings.Builder{}
-	for _, sentence := range translatedSentences {
-		translatedText.WriteString(sentence) // The error is always nil
-		translatedText.WriteString(" ")
+	translatedText := ""
+	if htmlContent {
+		translatedText = reconstructHTML(htmlTokens, translatedSentences, wordCounts)
+	} else {
+		translatedText = reconstructPlainText(translatedSentences)
 	}
 
 	// Create the response
 	response := TranslateResponse{
-		TranslatedText: translatedText.String(),
+		TranslatedText: translatedText,
 	}
 
 	// Marshal the response to JSON
@@ -228,8 +249,17 @@ func (h *handler) handle(ctx context.Context, event events.APIGatewayProxyReques
 	// Return the response
 	return events.APIGatewayProxyResponse{
 		StatusCode: http.StatusOK,
-		Body:       string(responseBody),
+		Body:       responseBody,
 	}, nil
+}
+
+func reconstructPlainText(translatedSentences []string) string {
+	var sb strings.Builder
+	for _, sentence := range translatedSentences {
+		sb.WriteString(sentence)
+		sb.WriteString(" ") // Add a space between sentences
+	}
+	return strings.TrimSpace(sb.String()) // Trim any trailing space
 }
 
 func shouldCacheBeUsed(ctx context.Context, dynamoClient DynamoDBClient, sourceLanguage, targetLanguage, text string) (CacheItem, bool, error) {
@@ -362,12 +392,15 @@ func unmarshalRequest(body []byte) (TranslateRequest, error) {
 	return request, nil
 }
 
-func marshalResponse(response TranslateResponse) ([]byte, error) {
-	body, err := json.Marshal(response)
+func marshalResponse(response TranslateResponse) (string, error) {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false) // Prevent HTML escaping. This is important for HTML content.
+	err := encoder.Encode(response)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
+		return "", fmt.Errorf("failed to marshal response: %w", err)
 	}
-	return body, nil
+	return strings.TrimSpace(buf.String()), nil
 }
 
 func validateRequest(request TranslateRequest) error {

@@ -58,7 +58,7 @@ func TestMarshalResponse(t *testing.T) {
 
 			// Additional check to ensure the output is valid JSON
 			var jsonCheck map[string]interface{}
-			if err := json.Unmarshal(got, &jsonCheck); err != nil {
+			if err := json.Unmarshal([]byte(got), &jsonCheck); err != nil {
 				t.Errorf("marshalResponse() produced invalid JSON: %v", err)
 			}
 		})
@@ -597,7 +597,7 @@ func TestHandle(t *testing.T) {
 			},
 			expectedResponse: events.APIGatewayProxyResponse{
 				StatusCode: http.StatusOK,
-				Body:       `{"translated_text":"Hola "}`,
+				Body:       `{"translated_text":"Hola"}`,
 			},
 			wantErr: false,
 		},
@@ -630,7 +630,7 @@ func TestHandle(t *testing.T) {
 			},
 			expectedResponse: events.APIGatewayProxyResponse{
 				StatusCode: http.StatusOK,
-				Body:       `{"translated_text":"Hola "}`,
+				Body:       `{"translated_text":"Hola"}`,
 			},
 			wantErr: false,
 		},
@@ -693,6 +693,43 @@ func TestHandle(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "Translate HTML content no cache",
+			event: events.APIGatewayProxyRequest{
+				Body: `{"source_language":"en","target_language":"es","text":"<p>Hello world.</p><p>Hello world.</p>"}`,
+			},
+			mockTranslateClient: &MockTranslateClient{
+				ListLanguagesFunc: func(ctx context.Context, params *translate.ListLanguagesInput, optFns ...func(*translate.Options)) (*translate.ListLanguagesOutput, error) {
+					return &translate.ListLanguagesOutput{
+						Languages: []types.Language{
+							{LanguageCode: aws.String("es")},
+						},
+					}, nil
+				},
+				TranslateTextFunc: func(ctx context.Context, params *translate.TranslateTextInput, optFns ...func(*translate.Options)) (*translate.TranslateTextOutput, error) {
+					if params.Text == nil {
+						return nil, fmt.Errorf("text is nil")
+					}
+					// Simulate translation of HTML content
+					return &translate.TranslateTextOutput{
+						TranslatedText: aws.String("Hola mundo."),
+					}, nil
+				},
+			},
+			mockDynamoDBClient: &MockDynamoDBClient{
+				GetItemFunc: func(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+					return &dynamodb.GetItemOutput{Item: nil}, nil
+				},
+				PutItemFunc: func(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+					return &dynamodb.PutItemOutput{}, nil
+				},
+			},
+			expectedResponse: events.APIGatewayProxyResponse{
+				StatusCode: http.StatusOK,
+				Body:       `{"translated_text":"<p>Hola mundo.</p><p>Hola mundo.</p>"}`,
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -710,6 +747,54 @@ func TestHandle(t *testing.T) {
 
 			if got.StatusCode != tt.expectedResponse.StatusCode || got.Body != tt.expectedResponse.Body {
 				t.Errorf("handle() = %v, expected %v", got, tt.expectedResponse)
+			}
+		})
+	}
+}
+
+func TestReconstructPlainText(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []string
+		expected string
+	}{
+		{
+			name:     "Single sentence",
+			input:    []string{"Hello world."},
+			expected: "Hello world.",
+		},
+		{
+			name:     "Multiple sentences",
+			input:    []string{"Hello world.", "How are you?", "I am fine!"},
+			expected: "Hello world. How are you? I am fine!",
+		},
+		{
+			name:     "Empty input",
+			input:    []string{},
+			expected: "",
+		},
+		{
+			name:     "Sentences with leading-trailing spaces",
+			input:    []string{"  Hello world.  ", "  How are you?  "},
+			expected: "Hello world.     How are you?",
+		},
+		{
+			name:     "Single word sentences",
+			input:    []string{"Hello", "world"},
+			expected: "Hello world",
+		},
+		{
+			name:     "Sentences with special characters",
+			input:    []string{"Hello!", "How's it going?", "Great!"},
+			expected: "Hello! How's it going? Great!",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := reconstructPlainText(tt.input)
+			if got != tt.expected {
+				t.Errorf("reconstructPlainText() = %q, expected %q", got, tt.expected)
 			}
 		})
 	}

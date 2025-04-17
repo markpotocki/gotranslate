@@ -85,3 +85,24 @@ def test_translate_content_with_empty_text(translate_url, headers):
     response_data = response.json()
     assert 'error' in response_data, "Response does not contain 'error'"
     assert response_data['error'] == 'Text cannot be empty', "Error message did not match expected output"
+
+
+def test_translate_content_with_html(translate_url, headers):
+    source_language = 'en'
+    target_language = 'es'
+    text = '<p>Hello, <strong>world</strong>!</p>'
+
+    response = requests.post(
+        translate_url,
+        json={
+            'source_language': source_language,
+            'target_language': target_language,
+            'text': text
+        },
+        headers=headers
+    )
+
+    assert response.status_code == 200, f"Expected status code 200, got {response.status_code}"
+    response_data = response.json()
+    assert 'translated_text' in response_data, "Response does not contain 'translated_text'"
+    assert response_data['translated_text'] == '<p>¡Hola, <strong>mundo</strong>!</p>', "Translation did not match expected output"
