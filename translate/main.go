@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -315,10 +316,25 @@ func cacheTranslatedText(ctx context.Context, dynamoClient DynamoDBClient, item 
 	return err
 }
 
+// This is an in-memory cache of the supported languages to persist them until
+// the lambda env is destroyed
+var supportedLanguageCache = sync.Map{}
+
 func doesTargetLanguageExist(ctx context.Context, translateClient TranslateClient, targetLanguage string) (bool, error) {
+	// Check cache
+	if _, ok := supportedLanguageCache.Load(targetLanguage); ok {
+		return true, nil
+	}
+
+	// Cache miss
 	languages, err := getSupportedLanguages(ctx, translateClient)
 	if err != nil {
 		return false, err
+	}
+
+	// Update cache
+	for _, language := range languages {
+		supportedLanguageCache.Store(language, true)
 	}
 
 	return slices.Contains(languages, targetLanguage), nil
